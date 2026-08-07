@@ -11,12 +11,27 @@ import numpy as np
 import websockets
 
 import config
+from config import MIN_SAMPLE_CONFIDENCE
 from tracker import Camera, FaceMesh, Calibrator, OneEuroFilter2D, FeatureExtractor
 from tracker.calibration import CalibrationError
 from tracker.camera import CameraError
 
 # Below this the fixation detector downstream gets too few samples per window.
 LOW_FPS = 20.0
+# How often to repeat a persistent detection problem in the console.
+DETECT_REPEAT_SEC = 5.0
+
+
+def log(message):
+    """Single output stream for everything the operator reads.
+
+    stdout and stderr buffer independently, so splitting messages between them
+    makes the console show events out of order -- "detected again" printing
+    before the "not detected" that caused it. flush keeps it immediate when the
+    output is piped to a file.
+    """
+    print(f"[gaze] {message}", flush=True)
+
 
 STATE_STARTING = "starting"
 STATE_NO_CAMERA = "no_camera"
@@ -43,6 +58,10 @@ class GazeService:
         # True between calib.begin and calib.fit. Without it, an already-loaded
         # model would keep emitting gaze in the gaps between calibration dots.
         self._in_calibration = False
+        # Detection logging: current problem, when it started, when last printed.
+        self._detect_problem = None
+        self._detect_since = 0.0
+        self._detect_last_log = 0.0
 
     # --- outbound ---------------------------------------------------------
 
@@ -99,7 +118,7 @@ class GazeService:
         elif kind == "calib.begin":
             self._calibrator.begin()
             self._in_calibration = True
-            print("[gaze] calibration started")
+            log("calibration started")
             self._set_state(STATE_CALIBRATING)
         elif kind == "calib.point":
             try:
@@ -144,8 +163,8 @@ class GazeService:
             self._calibrator.save()
         except OSError as exc:
             self._emit({"type": "error", "message": f"calibration fitted but not saved: {exc}"})
-        print(
-            f"[gaze] calibration fitted: {meta['n_points']} points, "
+        log(
+            f"calibration fitted: {meta['n_points']} points, "
             f"{meta['n_samples']} samples, ~{meta['error_px']}px typical error"
         )
         self._filter.reset()
@@ -159,6 +178,43 @@ class GazeService:
             }
         )
         self._set_state(STATE_RUNNING)
+
+    # --- detection logging ------------------------------------------------
+
+    def _log_detection(self, face, features, now):
+        """Report face/eye detection to the console.
+
+        Edge-triggered plus a slow repeat: at 30fps a per-frame print would
+        scroll a thousand lines a minute and bury the messages that matter.
+        Only transitions are logged, with a periodic reminder while the problem
+        persists so a user who looks away mid-session still sees why it stopped.
+        """
+        if face is None:
+            reason = "no face in view"
+        elif features is None:
+            reason = "face found but eyes not readable"
+        elif features.openness < 0.5:
+            reason = "eyes closed"
+        elif features.confidence < MIN_SAMPLE_CONFIDENCE:
+            reason = f"head turned too far (yaw {features.yaw:+.0f} deg)"
+        else:
+            reason = None
+
+        if reason is None:
+            if self._detect_problem is not None:
+                log(f"eyes detected again after {now - self._detect_since:.1f}s")
+                self._detect_problem = None
+            return
+
+        if reason != self._detect_problem:
+            # New problem, or the first frame of one.
+            log(f"eyes NOT detected -- {reason}")
+            self._detect_problem = reason
+            self._detect_since = now
+            self._detect_last_log = now
+        elif now - self._detect_last_log >= DETECT_REPEAT_SEC:
+            log(f"still no eyes -- {reason} ({now - self._detect_since:.0f}s)")
+            self._detect_last_log = now
 
     # --- tracker loop -----------------------------------------------------
 
@@ -174,8 +230,8 @@ class GazeService:
     def _run(self):
         restored = self._calibrator.load()
         if restored:
-            print(
-                f"[gaze] restored calibration: {restored['n_points']} points, "
+            log(
+                f"restored calibration: {restored['n_points']} points, "
                 f"~{restored['error_px']}px error"
             )
         # Stay in 'starting' until a frame has actually been through MediaPipe.
@@ -187,7 +243,7 @@ class GazeService:
         try:
             camera = Camera(index=self.camera_index).open()
         except CameraError as exc:
-            print(f"[gaze] {exc}", file=sys.stderr)
+            log(str(exc))
             self._set_state(STATE_NO_CAMERA)
             return
 
@@ -217,15 +273,15 @@ class GazeService:
                 # samples, which is too few for the dispersion test downstream.
                 if not warned_low_fps and len(frame_times) == 30 and self._fps < LOW_FPS:
                     warned_low_fps = True
-                    print(
-                        f"[gaze] warning: {self._fps:.0f} fps (want {LOW_FPS}+). "
+                    log(
+                        f"warning: {self._fps:.0f} fps (want {LOW_FPS:.0f}+). "
                         "The camera is lengthening its exposure -- add light in "
-                        "front of the user, not behind.",
-                        file=sys.stderr,
+                        "front of the user, not behind."
                     )
 
                 face = mesh.process(frame)
                 features = extract(face)
+                self._log_detection(face, features, now)
 
                 if self._state == STATE_STARTING:
                     # Model is warm and frames are flowing; commands will now be
@@ -339,8 +395,8 @@ async def main_async(service, host, port):
         service.clients.add(websocket)
         # Logged because "is the browser actually using this, or has it silently
         # fallen back to WebGazer?" is otherwise unanswerable from the console.
-        print(f"[gaze] client connected ({len(service.clients)} total) -- "
-              "the web app is using this service")
+        log(f"client connected ({len(service.clients)} total) -- "
+            "the web app is using this service")
         try:
             await websocket.send(json.dumps(service.status_message()))
             async for raw in websocket:
@@ -357,7 +413,7 @@ async def main_async(service, host, port):
             pass
         finally:
             service.clients.discard(websocket)
-            print(f"[gaze] client disconnected ({len(service.clients)} remaining)")
+            log(f"client disconnected ({len(service.clients)} remaining)")
 
     stop_future = asyncio.get_running_loop().create_future()
 
@@ -372,9 +428,9 @@ async def main_async(service, host, port):
         pass
 
     async with websockets.serve(handler, host, port, ping_interval=20):
-        print(f"[gaze] listening on ws://{host}:{port}")
+        log(f"listening on ws://{host}:{port}")
         await stop_future
-    print("[gaze] shutting down")
+    log("shutting down")
 
 
 def main():

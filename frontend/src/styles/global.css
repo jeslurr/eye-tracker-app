@@ -175,6 +175,19 @@ a { color: var(--accent); text-decoration: none; }
   50% { box-shadow: 0 0 0 18px rgba(255,216,77,0); }
 }
 
+/* Banner shown while the tracker can't see the player's eyes. A slow breathing
+   fade rather than a flash -- it must draw the eye back to the screen without
+   competing with the game target for attention. */
+@keyframes eyeAlertPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.72; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .attention-pulse { animation: none; }
+  [style*="eyeAlertPulse"] { animation: none !important; }
+}
+
 .heatmap {
   position: relative;
   background: #0a0e1f;

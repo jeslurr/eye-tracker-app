@@ -60,6 +60,34 @@ coordinates and the model maps straight into that space, which removes the
 conversion entirely. The trade-off: **moving or resizing the browser window
 invalidates the calibration.** Recalibrate after either.
 
+## Reading the console
+
+```
+[gaze] listening on ws://127.0.0.1:8765
+[gaze] restored calibration: 9 points, ~95.0px error
+[gaze] client connected (1 total) -- the web app is using this service
+[gaze] eyes NOT detected -- no face in view
+[gaze] still no eyes -- no face in view (5s)
+[gaze] eyes detected again after 7.2s
+[gaze] calibration started
+[gaze] calibration fitted: 9 points, 189 samples, ~95.0px typical error
+```
+
+`client connected` is the definitive answer to "is the web app using this
+service, or has it fallen back to WebGazer?" No such line means WebGazer.
+
+Detection messages are **edge-triggered** with a 5s repeat while the problem
+persists — at 30fps a per-frame print would scroll a thousand lines a minute and
+bury everything worth reading. Nothing is printed while tracking is healthy, so
+silence is good news. The reasons map to:
+
+| Message | Meaning |
+|---|---|
+| `no face in view` | MediaPipe found no face at all — framing or lighting |
+| `face found but eyes not readable` | Face detected, iris landmarks unusable |
+| `eyes closed` | Blinking, squinting, or looking down |
+| `head turned too far (yaw +40 deg)` | Beyond ~32°, where the far iris leaves view |
+
 ## Calibration
 
 Driven from the frontend's calibration screen — tap each of 9 dots and keep

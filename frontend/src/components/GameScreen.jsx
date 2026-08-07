@@ -3,8 +3,10 @@ import AdaptiveRenderer from './AdaptiveRenderer.jsx';
 import GazeDot from './GazeDot.jsx';
 import Calibration from './Calibration.jsx';
 import { useGazeTracking } from '../hooks/useGazeTracking.js';
+import { useEyeWatchdog } from '../hooks/useEyeWatchdog.js';
 import { connectSocket } from '../api/socket.js';
 import { api } from '../api/client.js';
+import { playAttentionChime, speakIfQuiet } from '../api/chime.js';
 
 const TARGET_TIME_MS = 12_000;
 const ROUND_COUNT = 6;
@@ -51,6 +53,7 @@ export default function GameScreen({ childId, level, difficulty, targets, onFini
 
   const targetRef = useRef(null);
   const socketRef = useRef(null);
+  const lastGazeAtRef = useRef(0);
   const reactionsRef = useRef([]);
   const targetShownAtRef = useRef(0);
   const firstFixationAtRef = useRef(null);
@@ -62,6 +65,7 @@ export default function GameScreen({ childId, level, difficulty, targets, onFini
     enabled: phase !== 'calibrate' && phase !== 'idle' && phase !== 'instructions',
     onSample: (s) => {
       setGaze({ x: s.x, y: s.y });
+      lastGazeAtRef.current = Date.now();
       const t = s.t;
       const inTarget = isInside(targetRef.current, s.x, s.y);
       if (inTarget && firstFixationAtRef.current == null) firstFixationAtRef.current = t;
@@ -73,6 +77,19 @@ export default function GameScreen({ childId, level, difficulty, targets, onFini
         target: inTarget ? target : undefined,
       });
     },
+  });
+
+  // Only nag during actual play. During calibration the Calibration screen
+  // already explains what's wrong, and on the menus nobody is being tracked.
+  const eyesLost = useEyeWatchdog({
+    enabled: phase === 'playing',
+    lastSampleAtRef: lastGazeAtRef,
+    onAlert: useCallback((secondsLost) => {
+      playAttentionChime();
+      // Only on the first alert; repeating speech every 10s would grate, and
+      // the chime plus the on-screen banner already carry the message.
+      if (secondsLost < 12) speakIfQuiet('Look at the screen');
+    }, []),
   });
 
   // Play instruction audio when entering instructions phase
@@ -269,6 +286,25 @@ export default function GameScreen({ childId, level, difficulty, targets, onFini
           </div>
         )}
       </div>
+
+      {eyesLost && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 40, display: 'flex', alignItems: 'center', gap: '.6rem',
+            padding: '.7rem 1.2rem', borderRadius: 999,
+            background: 'rgba(255,216,77,0.95)', color: '#1b1400',
+            fontSize: '1.05rem', fontWeight: 600,
+            boxShadow: '0 6px 24px rgba(0,0,0,0.35)',
+            animation: 'eyeAlertPulse 2s ease-in-out infinite',
+          }}
+        >
+          <span aria-hidden="true" style={{ fontSize: '1.3rem' }}>👀</span>
+          I can&apos;t see your eyes — look at the screen
+        </div>
+      )}
 
       <GazeDot x={gaze.x} y={gaze.y} />
     </div>
