@@ -1,0 +1,5 @@
+# Python 3.9-3.12 only. MediaPipe has no wheels for 3.13+.
+opencv-python==4.10.0.84
+mediapipe==0.10.14
+numpy==1.26.4
+websockets==12.0

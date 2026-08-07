@@ -58,7 +58,7 @@ export default function GameScreen({ childId, level, difficulty, targets, onFini
 
   const order = useMemo(() => buildRounds(targets, ROUND_COUNT), [targets]);
 
-  const { status: trackerStatus } = useGazeTracking({
+  const { status: trackerStatus, source: trackerSource, detail: trackerDetail } = useGazeTracking({
     enabled: phase !== 'calibrate' && phase !== 'idle' && phase !== 'instructions',
     onSample: (s) => {
       setGaze({ x: s.x, y: s.y });
@@ -203,7 +203,14 @@ export default function GameScreen({ childId, level, difficulty, targets, onFini
   }
 
   if (phase === 'calibrating') {
-    return <Calibration trackerStatus={trackerStatus} onDone={() => setPhase('instructions')} />;
+    return (
+      <Calibration
+        trackerStatus={trackerStatus}
+        source={trackerSource}
+        detail={trackerDetail}
+        onDone={() => setPhase('instructions')}
+      />
+    );
   }
 
   if (phase === 'instructions') {
